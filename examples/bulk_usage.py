@@ -25,7 +25,10 @@ def main():
         print("✅ Glassnode client initialized successfully")
     except ValueError as e:
         print(f"❌ Error: {e}")
-        print("Please set your API key using: export GLASSNODE_API_KEY=your-key-here")
+        print("Please set your API key using one of these methods:")
+        print("  1. Create a .env file: cp .env.example .env (then add your key)")
+        print("  2. Environment variable: export GLASSNODE_API_KEY=your-key-here")
+        print("  3. Direct parameter: GlassnodeClient(api_key='your-key')")
         return
     
     # Define assets and date range for examples

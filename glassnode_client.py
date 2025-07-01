@@ -14,6 +14,7 @@ import pandas as pd
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 import json
+from dotenv import load_dotenv
 
 
 class GlassnodeAPIError(Exception):
@@ -45,10 +46,14 @@ class GlassnodeClient:
         base_url: str = "https://api.glassnode.com/v1",
         timeout: int = 30
     ):
+        # Load environment variables from .env file
+        load_dotenv()
+        
         self.api_key = api_key or os.getenv("GLASSNODE_API_KEY")
         if not self.api_key:
             raise ValueError(
-                "API key is required. Provide it as argument or set GLASSNODE_API_KEY environment variable."
+                "API key is required. Provide it as argument, set GLASSNODE_API_KEY environment variable, "
+                "or create a .env file with GLASSNODE_API_KEY=your-key-here"
             )
         
         self.base_url = base_url.rstrip("/")

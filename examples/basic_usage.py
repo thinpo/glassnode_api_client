@@ -4,6 +4,11 @@ Glassnode API Client - Basic Usage Examples
 
 This script demonstrates how to use the Glassnode Python client
 to fetch various cryptocurrency metrics.
+
+Setup:
+1. Copy .env.example to .env and add your API key
+2. Or set GLASSNODE_API_KEY environment variable
+3. Or pass api_key parameter directly to GlassnodeClient()
 """
 
 import os
@@ -26,7 +31,10 @@ def main():
         print("✅ Glassnode client initialized successfully")
     except ValueError as e:
         print(f"❌ Error: {e}")
-        print("Please set your API key using: export GLASSNODE_API_KEY=your-key-here")
+        print("Please set your API key using one of these methods:")
+        print("  1. Create a .env file: cp .env.example .env (then add your key)")
+        print("  2. Environment variable: export GLASSNODE_API_KEY=your-key-here")
+        print("  3. Direct parameter: GlassnodeClient(api_key='your-key')")
         return
     
     # Define date range for examples
