@@ -5,6 +5,7 @@ A comprehensive Python client for interacting with the Glassnode API.
 Provides access to on-chain and market data for cryptocurrencies.
 
 Documentation: https://docs.glassnode.com/basic-api/endpoints
+Bulk API: https://docs.glassnode.com/basic-api/bulk-metrics
 """
 
 import os
@@ -102,13 +103,21 @@ class GlassnodeClient:
             params = {}
         params.update(kwargs)
         
-        # Remove None values
-        params = {k: v for k, v in params.items() if v is not None}
+        # Remove None values and handle list parameters for bulk endpoints
+        final_params = []
+        for key, value in params.items():
+            if value is not None:
+                if isinstance(value, list):
+                    # For bulk endpoints: add multiple parameters (e.g., ?a=BTC&a=ETH)
+                    for item in value:
+                        final_params.append((key, item))
+                else:
+                    final_params.append((key, value))
         
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         
         try:
-            response = self.session.get(url, params=params, timeout=self.timeout)
+            response = self.session.get(url, params=final_params, timeout=self.timeout)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -164,6 +173,124 @@ class GlassnodeClient:
         
         return data
     
+    def get_bulk_data(
+        self,
+        endpoint: str,
+        assets: Optional[List[str]] = None,
+        since: Optional[Union[str, datetime, int]] = None,
+        until: Optional[Union[str, datetime, int]] = None,
+        interval: str = "24h",
+        currency: Optional[str] = None,
+        **kwargs
+    ) -> pd.DataFrame:
+        """
+        Generic method to fetch bulk data from any endpoint (beta)
+        
+        Bulk endpoints allow fetching data for multiple assets or parameter combinations
+        in a single request. They consume API credits equal to individual calls.
+        
+        Args:
+            endpoint: API endpoint path
+            assets: List of asset symbols (e.g., ["BTC", "ETH"]). If None, fetches all assets.
+            since: Start date (YYYY-MM-DD, datetime, or unix timestamp)
+            until: End date (YYYY-MM-DD, datetime, or unix timestamp)
+            interval: Data interval (10m, 1h, 24h, 1w, 1month). Defaults to "24h"
+            currency: Currency for price data (e.g., "USD", "EUR")
+            **kwargs: Additional endpoint-specific parameters (can be lists for whitelisting)
+            
+        Returns:
+            DataFrame with bulk data including parameter columns
+            
+        Raises:
+            GlassnodeAPIError: If the API request fails
+            
+        Note:
+            - Timerange constraints apply based on interval:
+              * 10m/1h: max 10 days
+              * 24h: max 31 days  
+              * 1w/1month: max 93 days
+            - Each parameter combination consumes 1 API credit
+        """
+        # Validate timerange constraints
+        self._validate_bulk_timerange(since, until, interval)
+        
+        # Prepare base parameters
+        params = {
+            "s": self._format_timestamp(since) if since else None,
+            "u": self._format_timestamp(until) if until else None,
+            "i": interval,
+            "f": "json",  # Only JSON supported for bulk
+            "c": currency
+        }
+        
+        # Add asset whitelist if provided
+        if assets:
+            params["a"] = assets
+        
+        # Add additional kwargs (may also be lists for whitelisting)
+        params.update(kwargs)
+        
+        # Make request to bulk endpoint
+        bulk_endpoint = f"{endpoint.rstrip('/')}/bulk"
+        data = self._make_request(bulk_endpoint, params)
+        
+        # Process bulk response
+        return self._process_bulk_response(data)
+    
+    def _validate_bulk_timerange(
+        self, 
+        since: Optional[Union[str, datetime, int]], 
+        until: Optional[Union[str, datetime, int]], 
+        interval: str
+    ):
+        """Validate timerange constraints for bulk requests"""
+        if not since or not until:
+            return  # No validation if dates not provided
+        
+        start_ts = self._format_timestamp(since)
+        end_ts = self._format_timestamp(until)
+        duration_days = (end_ts - start_ts) / 86400  # Convert seconds to days
+        
+        constraints = {
+            "10m": 10,
+            "1h": 10,
+            "24h": 31,
+            "1d": 31,
+            "1w": 93,
+            "1month": 93
+        }
+        
+        max_days = constraints.get(interval)
+        if max_days and duration_days > max_days:
+            raise ValueError(
+                f"Timerange too large for interval '{interval}'. "
+                f"Maximum {max_days} days allowed, got {duration_days:.1f} days."
+            )
+    
+    def _process_bulk_response(self, data: Dict) -> pd.DataFrame:
+        """Process bulk API response into a DataFrame"""
+        if not isinstance(data, dict) or 'data' not in data:
+            raise GlassnodeAPIError("Invalid bulk response format")
+        
+        rows = []
+        for time_point in data['data']:
+            timestamp = time_point['t']
+            bulk_entries = time_point.get('bulk', [])
+            
+            for entry in bulk_entries:
+                row = {'t': timestamp}
+                row.update(entry)
+                rows.append(row)
+        
+        if not rows:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(rows)
+        df['t'] = pd.to_datetime(df['t'], unit='s')
+        df.set_index('t', inplace=True)
+        
+        return df
+    
     def _format_timestamp(self, timestamp: Union[str, datetime, int]) -> int:
         """Convert various timestamp formats to unix timestamp"""
         if isinstance(timestamp, str):
@@ -193,6 +320,11 @@ class BaseEndpoints:
         """Helper method to get data with base path"""
         full_endpoint = f"{self.base_path}/{endpoint}" if self.base_path else endpoint
         return self.client.get_data(full_endpoint, **kwargs)
+    
+    def _get_bulk_data(self, endpoint: str, **kwargs) -> pd.DataFrame:
+        """Helper method to get bulk data with base path"""
+        full_endpoint = f"{self.base_path}/{endpoint}" if self.base_path else endpoint
+        return self.client.get_bulk_data(full_endpoint, **kwargs)
 
 
 class AddressesEndpoints(BaseEndpoints):
@@ -206,21 +338,41 @@ class AddressesEndpoints(BaseEndpoints):
         """Get active addresses count"""
         return self._get_data("active_count", asset=asset, **kwargs)
     
+    def active_count_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get active addresses count for multiple assets (bulk)"""
+        return self._get_bulk_data("active_count", assets=assets, **kwargs)
+    
     def count(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get total addresses count"""
         return self._get_data("count", asset=asset, **kwargs)
+    
+    def count_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get total addresses count for multiple assets (bulk)"""
+        return self._get_bulk_data("count", assets=assets, **kwargs)
     
     def new_non_zero_count(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get new non-zero addresses count"""
         return self._get_data("new_non_zero_count", asset=asset, **kwargs)
     
+    def new_non_zero_count_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get new non-zero addresses count for multiple assets (bulk)"""
+        return self._get_bulk_data("new_non_zero_count", assets=assets, **kwargs)
+    
     def sending_count(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get sending addresses count"""
         return self._get_data("sending_count", asset=asset, **kwargs)
     
+    def sending_count_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get sending addresses count for multiple assets (bulk)"""
+        return self._get_bulk_data("sending_count", assets=assets, **kwargs)
+    
     def receiving_count(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get receiving addresses count"""
         return self._get_data("receiving_count", asset=asset, **kwargs)
+    
+    def receiving_count_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get receiving addresses count for multiple assets (bulk)"""
+        return self._get_bulk_data("receiving_count", assets=assets, **kwargs)
 
 
 class BlockchainEndpoints(BaseEndpoints):
@@ -258,25 +410,49 @@ class MarketEndpoints(BaseEndpoints):
         """Get asset price in USD"""
         return self._get_data("price_usd_close", asset=asset, **kwargs)
     
+    def price_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get asset price in USD for multiple assets (bulk)"""
+        return self._get_bulk_data("price_usd_close", assets=assets, **kwargs)
+    
     def market_cap(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get market capitalization"""
         return self._get_data("marketcap_usd", asset=asset, **kwargs)
+    
+    def market_cap_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get market capitalization for multiple assets (bulk)"""
+        return self._get_bulk_data("marketcap_usd", assets=assets, **kwargs)
     
     def mvrv(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get Market Value to Realized Value ratio"""
         return self._get_data("mvrv", asset=asset, **kwargs)
     
+    def mvrv_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get Market Value to Realized Value ratio for multiple assets (bulk)"""
+        return self._get_bulk_data("mvrv", assets=assets, **kwargs)
+    
     def mvrv_z_score(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get MVRV Z-Score"""
         return self._get_data("mvrv_z_score", asset=asset, **kwargs)
+    
+    def mvrv_z_score_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get MVRV Z-Score for multiple assets (bulk)"""
+        return self._get_bulk_data("mvrv_z_score", assets=assets, **kwargs)
     
     def realized_cap(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get realized capitalization"""
         return self._get_data("realizedcap_usd", asset=asset, **kwargs)
     
+    def realized_cap_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get realized capitalization for multiple assets (bulk)"""
+        return self._get_bulk_data("realizedcap_usd", assets=assets, **kwargs)
+    
     def realized_price(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get realized price"""
         return self._get_data("price_realized_usd", asset=asset, **kwargs)
+    
+    def realized_price_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get realized price for multiple assets (bulk)"""
+        return self._get_bulk_data("price_realized_usd", assets=assets, **kwargs)
     
     def btc_dominance(self, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get Bitcoin dominance"""
@@ -285,6 +461,10 @@ class MarketEndpoints(BaseEndpoints):
     def price_drawdown(self, asset: str, **kwargs) -> Union[pd.DataFrame, List[Dict]]:
         """Get price drawdown from ATH"""
         return self._get_data("price_drawdown_relative", asset=asset, **kwargs)
+    
+    def price_drawdown_bulk(self, assets: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+        """Get price drawdown from ATH for multiple assets (bulk)"""
+        return self._get_bulk_data("price_drawdown_relative", assets=assets, **kwargs)
 
 
 class IndicatorsEndpoints(BaseEndpoints):

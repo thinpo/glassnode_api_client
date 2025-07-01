@@ -141,6 +141,38 @@ def metadata_examples():
         print(f"❌ Unexpected error: {e}")
 
 
+def bulk_examples():
+    """Brief introduction to bulk functionality"""
+    
+    try:
+        client = GlassnodeClient()
+        
+        print("\n🚀 Bulk API Example (New Feature!)")
+        print("Fetch data for multiple assets in a single request:")
+        
+        # Quick bulk example
+        bulk_data = client.market.price_bulk(
+            assets=["BTC", "ETH"],
+            since="2024-01-01",
+            until="2024-01-07",
+            interval="24h"
+        )
+        
+        print(f"✅ Fetched {len(bulk_data)} data points for multiple assets")
+        print(f"Assets included: {bulk_data['a'].unique().tolist()}")
+        print("\nBulk benefits:")
+        print("  • Single API call for multiple assets")
+        print("  • Consistent timestamps across assets")
+        print("  • Ideal for multi-asset analysis")
+        print("\n💡 See examples/bulk_usage.py for comprehensive bulk examples")
+        
+    except GlassnodeAPIError as e:
+        print(f"❌ API Error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+
+
 if __name__ == "__main__":
     main()
-    metadata_examples() 
+    metadata_examples()
+    bulk_examples() 
